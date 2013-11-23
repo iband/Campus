@@ -1,10 +1,8 @@
-﻿using System;
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
-using System.Linq.Expressions;
+using System.IO;
 using System.Net;
-using System.Text;
+using System.Net.Http;
 using System.Threading.Tasks;
 
 namespace Multithreading
@@ -13,7 +11,7 @@ namespace Multithreading
     {
         public static void Run(string baseURL)
         {
-            //var cache = new Dictionary<string, byte[]>();
+            //ServicePointManager.DefaultConnectionLimit = 100500;
             var cache = new ConcurrentDictionary<string, byte[]>();
 
             var listener = new HttpListener();
@@ -22,41 +20,42 @@ namespace Multithreading
             while (true)
             {
                 var context = listener.GetContext();
-                Task.Factory.StartNew(() =>
-                {
-                    var request = context.Request;
-                    byte[] dataToResend = null;
-                    //Console.WriteLine("raw=" + request.RawUrl);
-
-                    if (cache.ContainsKey(request.RawUrl))
-                    {
-                        dataToResend = cache[request.RawUrl];
-                    }
-                    else
-                    {
-                        var client = new WebClient();
-                        try
-                        {
-                            dataToResend = client.DownloadData(baseURL + request.RawUrl);
-                        }
-                        catch (WebException e)
-                        {
-                            //Console.WriteLine("Client got an error");
-                            var errorText = new byte[1024];
-                            var responseStream = e.Response.GetResponseStream();
-                            if (responseStream != null)
-                                responseStream.Read(errorText, 0, errorText.Length);
-                            dataToResend = errorText;
-                        }
-                        cache[request.RawUrl] = dataToResend;
-                        //Console.WriteLine(request.RawUrl + " cached");
-                    }
-
-                    context.Response.OutputStream.Write(dataToResend, 0, dataToResend.Count());
-                    context.Response.Close();
-                });
-                //removeMe.Wait();
+                Task.Run(() => ProcessClient(baseURL, context, cache));
             }
+        }
+
+        private async static void ProcessClient(string baseURL, HttpListenerContext context, IDictionary<string, byte[]> cache)
+        {
+            var request = context.Request;
+            byte[] dataToResend = null;
+
+            if (cache.ContainsKey(request.RawUrl))
+            {
+                dataToResend = cache[request.RawUrl];
+            }
+            else
+            {
+                var memoryStream = await GetDataToResend(baseURL + request.RawUrl);
+                cache[request.RawUrl] = dataToResend = memoryStream.ToArray();
+                
+            }
+
+            await context.Response.OutputStream.WriteAsync(dataToResend, 0, dataToResend.Length);
+            context.Response.Close();
+        }
+
+        private async static Task<MemoryStream> GetDataToResend(string fullURL)
+        {
+
+            var memoryStream = new MemoryStream();
+            var httpClient = new HttpClient();
+
+            using(var clientStream = await httpClient.GetStreamAsync(fullURL))
+            {
+                await clientStream.CopyToAsync(memoryStream);
+            }
+
+            return memoryStream;
         }
     }
 }
